@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "modbus_master_sim"
+version = "0.1.0"
+description = "RegiStar Modbus master simulator GUI"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  "pandas",
+  "pyserial",
+]
+
+[project.scripts]
+registar = "modbus_master_sim.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"modbus_master_sim" = ["icons/*.ico"]
