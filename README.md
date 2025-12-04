@@ -8,7 +8,7 @@ Excel で定義したレジスタテーブルを読み込み、直感的な操�
 開発者向けセットアップ手順:
 
 ```powershell
-git clone <このリポジトリのURL>
+git clone https://github.com/prevalmam/MODBUS_MASTER_SIM.git
 cd MODBUS_MASTER_SIM
 pip install .
 ```
