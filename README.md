@@ -5,7 +5,33 @@ Excel で定義したレジスタテーブルを読み込み、直感的な操�
 
 ## インストール
 
-開発者向けセットアップ手順:
+### EXE版を使う
+
+#### ダウンロード
+Windows 向けの実行ファイル（exe）は  
+GitHub Releases ページからダウンロードできます。
+
+➡ **[Releases ページはこちら](https://github.com/prevalmam/MODBUS_MASTER_SIM/releases)**
+
+最新バージョンの Assets から  
+`modbus-master-sim.exe` をダウンロードしてください。
+
+#### SHA-256（検証用）
+
+配布している実行ファイルの SHA-256 ハッシュ値は  
+Releases の Assets に含まれる `SHA256SUMS.txt` に記載しています。
+
+ダウンロード後、以下のコマンドで検証できます。
+```powershell
+certutil -hashfile modbus-master-sim.exe SHA256
+```
+出力されたハッシュ値が SHA256SUMS.txt に記載されている値と一致すれば、
+ファイルが改ざんされていないことを確認できます。
+
+### ソースコードから使う
+
+#### git clone + pip install
+次に示すコマンドを実行して，ソースコードをクローンし，pip でインストールします。
 
 ```powershell
 git clone https://github.com/prevalmam/MODBUS_MASTER_SIM.git
@@ -13,7 +39,7 @@ cd MODBUS_MASTER_SIM
 pip install .
 ```
 
-## 使い方
+#### 使い方
 
 1. Excel でレジスタ定義ファイルを準備します。
 2. コマンドラインから以下を実行します。
