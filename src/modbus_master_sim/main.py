@@ -113,6 +113,10 @@ class ModbusMasterGUI:
         self.root = root
         self.serial_port = None
         self.reg_table = reg_table        # ← メンバに保存
+        self.slave_addr = 1
+        self.baudrate = 57600
+        self.slave_addr_var = tk.StringVar(value=str(self.slave_addr))
+        self.baudrate_var = tk.StringVar(value=str(self.baudrate))
 
         self.polling_widgets = []
         self.polling_index = 0
@@ -128,9 +132,39 @@ class ModbusMasterGUI:
         self.root.columnconfigure(2, weight=1)
         self.root.rowconfigure(1, weight=1)
 
-        self.port_combo = ttk.Combobox(self.root, values=self.get_serial_ports(), state="readonly")
-        self.port_combo.grid(row=0, column=0, padx=5, pady=5, sticky="ew")
-        ttk.Button(self.root, text="Connect", command=self.connect_serial).grid(row=0, column=1, padx=5, pady=5, sticky="ew")
+        top_frame = ttk.Frame(self.root)
+        top_frame.grid(row=0, column=0, columnspan=2, padx=5, pady=5, sticky="ew")
+        top_frame.columnconfigure(0, weight=0)
+        top_frame.columnconfigure(1, weight=0)
+        top_frame.columnconfigure(2, weight=1)
+        top_frame.columnconfigure(3, weight=0)
+
+        vcmd = (self.root.register(self._validate_slave_addr_input), "%P")
+        self.slave_addr_entry = ttk.Entry(
+            top_frame,
+            textvariable=self.slave_addr_var,
+            width=6,
+            justify="right",
+            validate="key",
+            validatecommand=vcmd,
+        )
+        self.slave_addr_entry.grid(row=0, column=0, padx=2, sticky="ew")
+
+        self.baudrate_combo = ttk.Combobox(
+            top_frame,
+            textvariable=self.baudrate_var,
+            values=self.get_baudrate_values(),
+            state="readonly",
+            width=8,
+        )
+        self.baudrate_combo.grid(row=0, column=1, padx=2, sticky="ew")
+
+        self.port_combo = ttk.Combobox(top_frame, values=self.get_serial_ports(), state="readonly")
+        self.port_combo.grid(row=0, column=2, padx=2, sticky="ew")
+
+        ttk.Button(top_frame, text="Connect", command=self.connect_serial).grid(
+            row=0, column=3, padx=2, sticky="ew"
+        )
 
         self.reg_listbox = tk.Listbox(self.root, height=8)
         for reg in self.reg_table:
@@ -202,13 +236,49 @@ class ModbusMasterGUI:
     def get_serial_ports(self):
         return [p.device for p in serial.tools.list_ports.comports()]
 
+    def get_baudrate_values(self):
+        return ["1200", "2400", "4800", "9600", "19200", "38400", "57600", "115200"]
+
+    def _validate_slave_addr_input(self, proposed):
+        if proposed == "":
+            return True
+        return proposed.isdigit()
+
     def connect_serial(self):
         port = self.port_combo.get()
         if not port:
             messagebox.showerror("Error", "Select a serial port.")
             return
+        addr_raw = self.slave_addr_var.get().strip()
+        if not addr_raw:
+            messagebox.showerror("Error", "Enter a slave address (0-247).")
+            return
         try:
-            self.serial_port = serial.Serial(port, baudrate=57600, timeout=1)
+            addr = int(addr_raw)
+        except ValueError:
+            messagebox.showerror("Error", "Slave address must be a number.")
+            return
+        if addr < 0 or addr > 247:
+            messagebox.showerror("Error", "Slave address must be in range 0-247.")
+            return
+        baud_raw = self.baudrate_combo.get().strip()
+        if not baud_raw:
+            messagebox.showerror("Error", "Select a baudrate.")
+            return
+        try:
+            baud = int(baud_raw)
+        except ValueError:
+            messagebox.showerror("Error", "Baudrate must be a number.")
+            return
+        if self.serial_port and self.serial_port.is_open:
+            try:
+                self.serial_port.close()
+            except Exception:
+                pass
+        try:
+            self.serial_port = serial.Serial(port, baudrate=baud, timeout=1)
+            self.slave_addr = addr
+            self.baudrate = baud
             messagebox.showinfo("Connected", f"Connected to {port}")
         except Exception as e:
             messagebox.showerror("Connection Failed", str(e))
@@ -227,7 +297,7 @@ class ModbusMasterGUI:
         length = self.current_reg['length'] * (2 if self.current_reg['type'] in ["float", "uint32_t"] else 1)
 
         self.log(f"\n[Send] → Read Holding Register: Addr=0x{addr:04X}, Count={length}")
-        queue_send_read(self.serial_port, addr, length, self.handle_read_result)
+        queue_send_read(self.serial_port, self.slave_addr, addr, length, self.handle_read_result)
 
 
     def handle_read_result(self, data):
@@ -296,7 +366,7 @@ class ModbusMasterGUI:
 
         addr = self.current_reg['addr']
         queue_send_write_single(
-            self.serial_port, addr, val, self.handle_write_single_result
+            self.serial_port, self.slave_addr, addr, val, self.handle_write_single_result
         )
 
     def handle_write_single_result(self, data):
@@ -312,7 +382,7 @@ class ModbusMasterGUI:
 
     def on_polling_read_test(self):
         reg = {"name": "TEMP", "addr": 0x0002, "length": 1, "type": "uint16_t"}
-        queue_send_read_for(self.serial_port, reg, self.handle_polling_result)
+        queue_send_read_for(self.serial_port, self.slave_addr, reg, self.handle_polling_result)
 
     def handle_polling_result(self, reg, data):
         self.log(f"\n[Polling Result] {reg['name']}")
@@ -339,7 +409,7 @@ class ModbusMasterGUI:
         typ = self.current_reg['type']
 
         queue_send_write_multi(
-            self.serial_port, addr, values, typ, self.handle_write_multi_result
+            self.serial_port, self.slave_addr, addr, values, typ, self.handle_write_multi_result
         )
 
     def handle_write_multi_result(self, data):
@@ -527,7 +597,7 @@ class ModbusMasterGUI:
                         entry["prev"] = None
                 return cb
 
-            queue_send_read_for(self.serial_port, reg, make_cb(entry))
+            queue_send_read_for(self.serial_port, self.slave_addr, reg, make_cb(entry))
 
         self._polling_task_id = self.root.after(interval, self.polling_loop, interval)
 
@@ -547,10 +617,10 @@ class ModbusMasterGUI:
     
 
 # --- キュー化された通信処理（Read） ---
-def queue_send_read(serial_port, addr, length, callback):
+def queue_send_read(serial_port, unit_id, addr, length, callback):
     def task():
         try:
-            frame = struct.pack('>B B H H', 0x01, 0x03, addr, length)
+            frame = struct.pack('>B B H H', unit_id, 0x03, addr, length)
             crc = calc_crc(frame)
             frame += struct.pack('<H', crc)
             serial_port.reset_input_buffer()
@@ -567,10 +637,10 @@ def queue_send_read(serial_port, addr, length, callback):
     serial_task_queue.put((task, (), {}))
 
 # --- キュー化された通信処理（Write Single Register） ---
-def queue_send_write_single(serial_port, addr, value, callback):
+def queue_send_write_single(serial_port, unit_id, addr, value, callback):
     def task():
         try:
-            frame = struct.pack('>B B H H', 0x01, 0x06, addr, value)
+            frame = struct.pack('>B B H H', unit_id, 0x06, addr, value)
             crc = calc_crc(frame)
             frame += struct.pack('<H', crc)
             serial_port.reset_input_buffer()
@@ -594,7 +664,7 @@ def queue_send_write_single(serial_port, addr, value, callback):
     serial_task_queue.put((task, (), {}))
 
 # --- キュー化された通信処理（Polling用 Read） ---
-def queue_send_read_for(serial_port, reg, callback):
+def queue_send_read_for(serial_port, unit_id, reg, callback):
     def task():
         try:
             addr = reg["addr"]
@@ -602,7 +672,7 @@ def queue_send_read_for(serial_port, reg, callback):
             typ = reg["type"]
             word_count = length * (2 if typ in ["float", "uint32_t"] else 1)
 
-            frame = struct.pack('>B B H H', 0x01, 0x03, addr, word_count)
+            frame = struct.pack('>B B H H', unit_id, 0x03, addr, word_count)
             crc = calc_crc(frame)
             frame += struct.pack('<H', crc)
             serial_port.reset_input_buffer()
@@ -630,7 +700,7 @@ def queue_send_read_for(serial_port, reg, callback):
     serial_task_queue.put((task, (), {}))
 
 # --- キュー化された通信処理（Write Multiple Registers） ---
-def queue_send_write_multi(serial_port, addr, values, typ, callback):
+def queue_send_write_multi(serial_port, unit_id, addr, values, typ, callback):
     def task():
         try:
             encoded = b''
@@ -646,7 +716,7 @@ def queue_send_write_multi(serial_port, addr, values, typ, callback):
 
             num_regs = len(encoded) // 2
             byte_count = len(encoded)
-            frame = struct.pack('>B B H H B', 0x01, 0x10, addr, num_regs, byte_count) + encoded
+            frame = struct.pack('>B B H H B', unit_id, 0x10, addr, num_regs, byte_count) + encoded
             crc = calc_crc(frame)
             frame += struct.pack('<H', crc)
 
