@@ -136,8 +136,11 @@ class ModbusMasterGUI:
         top_frame.grid(row=0, column=0, columnspan=2, padx=5, pady=5, sticky="ew")
         top_frame.columnconfigure(0, weight=0)
         top_frame.columnconfigure(1, weight=0)
-        top_frame.columnconfigure(2, weight=1)
-        top_frame.columnconfigure(3, weight=0)
+        top_frame.columnconfigure(2, weight=0)
+        top_frame.columnconfigure(3, weight=1)
+        top_frame.columnconfigure(4, weight=0)
+
+        ttk.Label(top_frame, text="Slave Addr:").grid(row=0, column=0, padx=2, sticky="w")
 
         vcmd = (self.root.register(self._validate_slave_addr_input), "%P")
         self.slave_addr_entry = ttk.Entry(
@@ -148,7 +151,7 @@ class ModbusMasterGUI:
             validate="key",
             validatecommand=vcmd,
         )
-        self.slave_addr_entry.grid(row=0, column=0, padx=2, sticky="ew")
+        self.slave_addr_entry.grid(row=0, column=1, padx=2, sticky="ew")
 
         self.baudrate_combo = ttk.Combobox(
             top_frame,
@@ -157,13 +160,13 @@ class ModbusMasterGUI:
             state="readonly",
             width=8,
         )
-        self.baudrate_combo.grid(row=0, column=1, padx=2, sticky="ew")
+        self.baudrate_combo.grid(row=0, column=2, padx=2, sticky="ew")
 
         self.port_combo = ttk.Combobox(top_frame, values=self.get_serial_ports(), state="readonly")
-        self.port_combo.grid(row=0, column=2, padx=2, sticky="ew")
+        self.port_combo.grid(row=0, column=3, padx=2, sticky="ew")
 
         ttk.Button(top_frame, text="Connect", command=self.connect_serial).grid(
-            row=0, column=3, padx=2, sticky="ew"
+            row=0, column=4, padx=2, sticky="ew"
         )
 
         self.reg_listbox = tk.Listbox(self.root, height=8)
@@ -234,7 +237,18 @@ class ModbusMasterGUI:
                 self.input_entries.append(entry)
 
     def get_serial_ports(self):
-        return [p.device for p in serial.tools.list_ports.comports()]
+        self.port_display_to_device = {}
+        display_list = []
+        for port in serial.tools.list_ports.comports():
+            device = port.device
+            description = (port.description or "").strip()
+            if description and description != device:
+                display = f"{device} ({description})"
+            else:
+                display = device
+            self.port_display_to_device[display] = device
+            display_list.append(display)
+        return display_list
 
     def get_baudrate_values(self):
         return ["1200", "2400", "4800", "9600", "19200", "38400", "57600", "115200"]
@@ -245,10 +259,11 @@ class ModbusMasterGUI:
         return proposed.isdigit()
 
     def connect_serial(self):
-        port = self.port_combo.get()
-        if not port:
+        port_display = self.port_combo.get()
+        if not port_display:
             messagebox.showerror("Error", "Select a serial port.")
             return
+        port = self.port_display_to_device.get(port_display, port_display)
         addr_raw = self.slave_addr_var.get().strip()
         if not addr_raw:
             messagebox.showerror("Error", "Enter a slave address (0-247).")
