@@ -115,8 +115,10 @@ class ModbusMasterGUI:
         self.reg_table = reg_table        # ← メンバに保存
         self.slave_addr = 1
         self.baudrate = 57600
+        self.parity = "NONE"
         self.slave_addr_var = tk.StringVar(value=str(self.slave_addr))
         self.baudrate_var = tk.StringVar(value=str(self.baudrate))
+        self.parity_var = tk.StringVar(value=self.parity)
 
         self.polling_widgets = []
         self.polling_index = 0
@@ -137,8 +139,9 @@ class ModbusMasterGUI:
         top_frame.columnconfigure(0, weight=0)
         top_frame.columnconfigure(1, weight=0)
         top_frame.columnconfigure(2, weight=0)
-        top_frame.columnconfigure(3, weight=1)
-        top_frame.columnconfigure(4, weight=0)
+        top_frame.columnconfigure(3, weight=0)
+        top_frame.columnconfigure(4, weight=1)
+        top_frame.columnconfigure(5, weight=0)
 
         ttk.Label(top_frame, text="Slave Addr:").grid(row=0, column=0, padx=2, sticky="w")
 
@@ -162,11 +165,20 @@ class ModbusMasterGUI:
         )
         self.baudrate_combo.grid(row=0, column=2, padx=2, sticky="ew")
 
+        self.parity_combo = ttk.Combobox(
+            top_frame,
+            textvariable=self.parity_var,
+            values=self.get_parity_values(),
+            state="readonly",
+            width=8,
+        )
+        self.parity_combo.grid(row=0, column=3, padx=2, sticky="ew")
+
         self.port_combo = ttk.Combobox(top_frame, values=self.get_serial_ports(), state="readonly")
-        self.port_combo.grid(row=0, column=3, padx=2, sticky="ew")
+        self.port_combo.grid(row=0, column=4, padx=2, sticky="ew")
 
         ttk.Button(top_frame, text="Connect", command=self.connect_serial).grid(
-            row=0, column=4, padx=2, sticky="ew"
+            row=0, column=5, padx=2, sticky="ew"
         )
 
         self.reg_listbox = tk.Listbox(self.root, height=8)
@@ -253,6 +265,17 @@ class ModbusMasterGUI:
     def get_baudrate_values(self):
         return ["1200", "2400", "4800", "9600", "19200", "38400", "57600", "115200"]
 
+    def get_parity_values(self):
+        return ["NONE", "ODD", "EVEN"]
+
+    def get_serial_parity(self, parity_name):
+        parity_map = {
+            "NONE": serial.PARITY_NONE,
+            "ODD": serial.PARITY_ODD,
+            "EVEN": serial.PARITY_EVEN,
+        }
+        return parity_map.get(parity_name)
+
     def _validate_slave_addr_input(self, proposed):
         if proposed == "":
             return True
@@ -285,15 +308,21 @@ class ModbusMasterGUI:
         except ValueError:
             messagebox.showerror("Error", "Baudrate must be a number.")
             return
+        parity_raw = self.parity_combo.get().strip().upper()
+        parity = self.get_serial_parity(parity_raw)
+        if parity is None:
+            messagebox.showerror("Error", "Select a parity bit.")
+            return
         if self.serial_port and self.serial_port.is_open:
             try:
                 self.serial_port.close()
             except Exception:
                 pass
         try:
-            self.serial_port = serial.Serial(port, baudrate=baud, timeout=1)
+            self.serial_port = serial.Serial(port, baudrate=baud, parity=parity, timeout=1)
             self.slave_addr = addr
             self.baudrate = baud
+            self.parity = parity_raw
             messagebox.showinfo("Connected", f"Connected to {port}")
         except Exception as e:
             messagebox.showerror("Connection Failed", str(e))
