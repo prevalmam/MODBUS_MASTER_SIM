@@ -55,6 +55,14 @@ def calc_crc(data):
     return crc & 0xFFFF
 
 # --- Excelパース処理 ---
+def get_read_register_count(typ, length):
+    if typ in ["float", "uint32_t"]:
+        return length * 2
+    if typ == "string":
+        return (length + 1) // 2
+    return length
+
+
 def extract_registers_from_excel(path):
     reg_df = pd.read_excel(path, sheet_name="RegisterTable", header=None)
     len_df = pd.read_excel(path, sheet_name="LengthDefs", header=None)
@@ -243,10 +251,16 @@ class ModbusMasterGUI:
         is_array = length > 1
 
         self.read_btn.config(state=tk.NORMAL if access in ["R", "RW"] else tk.DISABLED)
-        self.write_single_btn.config(state=tk.NORMAL if (access in ["W", "RW"] and typ == "uint16_t" and not is_array) else tk.DISABLED)
-        self.write_multi_btn.config(state=tk.NORMAL if access in ["W", "RW"] else tk.DISABLED)
+        self.write_single_btn.config(state=tk.NORMAL if (access in ["W", "RW"] and ((typ == "uint16_t" and not is_array) or typ == "string")) else tk.DISABLED)
+        self.write_multi_btn.config(state=tk.NORMAL if (access in ["W", "RW"] and typ != "string") else tk.DISABLED)
 
         if access in ["W", "RW"]:
+            if typ == "string":
+                entry = ttk.Entry(self.value_frame, width=max(20, min(length, 60)))
+                entry.grid(row=0, column=0, padx=2, pady=2, sticky="w")
+                self.input_entries.append(entry)
+                return
+
             for i in range(length):
                 entry = ttk.Entry(self.value_frame, width=8)
                 entry.insert(0, "0")
@@ -375,9 +389,12 @@ class ModbusMasterGUI:
         self.update_buttons_and_inputs()  # エントリ更新＆ボタン有効化
 
         addr = self.current_reg['addr']
-        length = self.current_reg['length'] * (2 if self.current_reg['type'] in ["float", "uint32_t"] else 1)
+        length = get_read_register_count(self.current_reg['type'], self.current_reg['length'])
+        frame = struct.pack('>B B H H', self.slave_addr, 0x03, addr, length)
+        frame += struct.pack('<H', calc_crc(frame))
 
         self.log(f"\n[Send] → Read Holding Register: Addr=0x{addr:04X}, Count={length}")
+        self.log(f"[Send Raw] {frame.hex().upper()}")
         queue_send_read(self.serial_port, self.slave_addr, addr, length, self.handle_read_result)
 
 
@@ -400,7 +417,7 @@ class ModbusMasterGUI:
             typ = self.current_reg['type']
 
             # --- フォーマット関数で整形 ---
-            formatted = self.format_read_values(typ, values)
+            formatted = self.format_read_values(typ, values, self.current_reg['length'])
 
             for i, val in enumerate(formatted):
                 self.log(f"\u2192 [{i}] {val}")
@@ -409,8 +426,17 @@ class ModbusMasterGUI:
             self.log(f"[Decode Error] {str(e)}")
 
 
-    def format_read_values(self, typ, values):
+    def format_read_values(self, typ, values, byte_length=None):
         formatted = []
+        if typ == "string":
+            try:
+                raw = bytes(values[:byte_length]) if byte_length is not None else bytes(values)
+                text = raw.decode("ascii").rstrip("\x00")
+                formatted.append(text)
+            except UnicodeDecodeError:
+                formatted.append("?")
+            return formatted
+
         step = 4 if typ in ["float", "uint32_t"] else 2
         for i in range(0, len(values), step):
             try:
@@ -439,13 +465,32 @@ class ModbusMasterGUI:
             self.log("[Error] レジスタが選択されていません。")
             return
 
+        typ = self.current_reg['type']
+        addr = self.current_reg['addr']
+        if typ == "string":
+            text = self.input_entries[0].get()
+            try:
+                encoded = text.encode("ascii")
+            except UnicodeEncodeError:
+                messagebox.showerror("Error", "String value must be ASCII.")
+                return
+
+            byte_length = self.current_reg['length']
+            if len(encoded) > byte_length:
+                messagebox.showerror("Error", f"String is too long. Max {byte_length} bytes.")
+                return
+
+            queue_send_write_multi(
+                self.serial_port, self.slave_addr, addr, [text], typ, self.handle_write_multi_result, byte_length
+            )
+            return
+
         try:
             val = int(float(self.input_entries[0].get()))
         except ValueError:
             messagebox.showerror("Error", "無効な入力値です。")
             return
 
-        addr = self.current_reg['addr']
         queue_send_write_single(
             self.serial_port, self.slave_addr, addr, val, self.handle_write_single_result
         )
@@ -597,6 +642,33 @@ class ModbusMasterGUI:
 
             reg_len = reg.get("length", 1)
             typ = reg.get("type", "uint16_t")
+            if typ == "string":
+                row = ttk.Frame(self.scrollable_frame)
+                row.pack(fill=tk.X, pady=1)
+
+                var = tk.BooleanVar(value=False)
+                check = ttk.Checkbutton(row, variable=var)
+                check.pack(side=tk.LEFT)
+
+                addr_label = ttk.Label(row, text=str(reg["addr"]), width=6, anchor="e")
+                addr_label.pack(side=tk.LEFT, padx=2)
+
+                name_label = ttk.Label(row, text=reg["name"], width=20, anchor="w")
+                name_label.pack(side=tk.LEFT, padx=2)
+
+                val_label = ttk.Label(row, text="-Unknown-", relief=tk.SUNKEN, width=20, background="white")
+                val_label.pack(side=tk.LEFT, padx=2)
+
+                self.polling_widgets.append({
+                    "reg": reg,
+                    "index": None,
+                    "word_size": get_read_register_count(typ, reg_len),
+                    "var": var,
+                    "value_label": val_label,
+                    "prev": None
+                })
+                continue
+
             word_size = 2 if typ in ["float", "uint32_t"] else 1
             is_array = reg_len > 1
 
@@ -615,7 +687,7 @@ class ModbusMasterGUI:
                 name_label = ttk.Label(row, text=name, width=20, anchor="w")
                 name_label.pack(side=tk.LEFT, padx=2)
 
-                val_label = ttk.Label(row, text="-不定-", relief=tk.SUNKEN, width=12, background="white")
+                val_label = ttk.Label(row, text="-Unknown-", relief=tk.SUNKEN, width=12, background="white")
                 val_label.pack(side=tk.LEFT, padx=2)
 
                 self.polling_widgets.append({
@@ -671,6 +743,20 @@ class ModbusMasterGUI:
 
             def make_cb(entry):
                 def cb(reg, data):
+                    if reg.get("type") == "string":
+                        if data is None:
+                            entry["value_label"].config(text="-No Response-", background="red")
+                            entry["prev"] = None
+                            return
+
+                        value = str(data)
+                        if entry["prev"] != value:
+                            entry["value_label"].config(text=value, background="yellow")
+                        else:
+                            entry["value_label"].config(text=value, background="white")
+                        entry["prev"] = value
+                        return
+
                     length = reg["length"]
                     if not data or not isinstance(data, (list, tuple)) or len(data) < length:
                         for e in self.polling_widgets:
@@ -765,7 +851,7 @@ def queue_send_read_for(serial_port, unit_id, reg, callback):
             addr = reg["addr"]
             length = reg["length"]
             typ = reg["type"]
-            word_count = length * (2 if typ in ["float", "uint32_t"] else 1)
+            word_count = get_read_register_count(typ, length)
 
             frame = struct.pack('>B B H H', unit_id, 0x03, addr, word_count)
             crc = calc_crc(frame)
@@ -785,6 +871,8 @@ def queue_send_read_for(serial_port, unit_id, reg, callback):
                     parsed = struct.unpack('>' + 'I' * length, bytes(values))
                 elif typ == "float":
                     parsed = struct.unpack('>' + 'f' * length, bytes(values))
+                elif typ == "string":
+                    parsed = bytes(values[:length]).decode("ascii").rstrip("\x00")
                 else:
                     parsed = None
         except Exception:
@@ -795,19 +883,28 @@ def queue_send_read_for(serial_port, unit_id, reg, callback):
     serial_task_queue.put((task, (), {}))
 
 # --- キュー化された通信処理（Write Multiple Registers） ---
-def queue_send_write_multi(serial_port, unit_id, addr, values, typ, callback):
+def queue_send_write_multi(serial_port, unit_id, addr, values, typ, callback, string_byte_length=None):
     def task():
         try:
             encoded = b''
-            for v in values:
-                if typ == "uint16_t":
-                    encoded += struct.pack('>H', int(v))
-                elif typ == "uint32_t":
-                    encoded += struct.pack('>I', int(v))
-                elif typ == "float":
-                    encoded += struct.pack('>f', float(v))
-                else:
-                    raise ValueError("Unsupported type")
+            if typ == "string":
+                raw = str(values[0]).encode("ascii")
+                byte_length = string_byte_length if string_byte_length is not None else len(raw)
+                if len(raw) > byte_length:
+                    raise ValueError("String is too long")
+                encoded = raw.ljust(byte_length, b'\x00')
+                if len(encoded) % 2:
+                    encoded += b'\x00'
+            else:
+                for v in values:
+                    if typ == "uint16_t":
+                        encoded += struct.pack('>H', int(v))
+                    elif typ == "uint32_t":
+                        encoded += struct.pack('>I', int(v))
+                    elif typ == "float":
+                        encoded += struct.pack('>f', float(v))
+                    else:
+                        raise ValueError("Unsupported type")
 
             num_regs = len(encoded) // 2
             byte_count = len(encoded)
