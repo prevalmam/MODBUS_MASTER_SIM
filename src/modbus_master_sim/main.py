@@ -8,10 +8,13 @@ import queue
 import sys
 import pandas as pd
 import os
+import time
 from importlib import resources as importlib_resources
 
 # --- 通信用キューとスレッド ---
 serial_task_queue = queue.Queue()
+DEFAULT_INTER_FRAME_DELAY_MS = 5.0
+inter_frame_delay_sec = DEFAULT_INTER_FRAME_DELAY_MS / 1000
 root = None  # Late-initialized Tk root shared across callbacks
 
 def serial_worker():
@@ -19,6 +22,9 @@ def serial_worker():
         try:
             func, args, kwargs = serial_task_queue.get()
             func(*args, **kwargs)
+            delay = inter_frame_delay_sec
+            if delay > 0:
+                time.sleep(delay)
         except Exception as e:
             print("[Worker Error]", e)
         finally:
@@ -119,6 +125,7 @@ class ModbusMasterGUI:
         self.slave_addr_var = tk.StringVar(value=str(self.slave_addr))
         self.baudrate_var = tk.StringVar(value=str(self.baudrate))
         self.parity_var = tk.StringVar(value=self.parity)
+        self.inter_frame_delay_var = tk.StringVar(value=f"{DEFAULT_INTER_FRAME_DELAY_MS:g}")
 
         self.polling_widgets = []
         self.polling_index = 0
@@ -280,6 +287,36 @@ class ModbusMasterGUI:
         if proposed == "":
             return True
         return proposed.isdigit()
+
+    def _validate_inter_frame_delay_input(self, proposed):
+        global inter_frame_delay_sec
+
+        if proposed == "":
+            return True
+        try:
+            delay_ms = float(proposed)
+        except ValueError:
+            return False
+        if delay_ms < 0:
+            return False
+
+        inter_frame_delay_sec = delay_ms / 1000
+        return True
+
+    def _normalize_inter_frame_delay_input(self, event=None):
+        global inter_frame_delay_sec
+
+        raw = self.inter_frame_delay_var.get().strip()
+        if not raw:
+            raw = f"{DEFAULT_INTER_FRAME_DELAY_MS:g}"
+        try:
+            delay_ms = float(raw)
+        except ValueError:
+            delay_ms = DEFAULT_INTER_FRAME_DELAY_MS
+
+        delay_ms = max(0, delay_ms)
+        inter_frame_delay_sec = delay_ms / 1000
+        self.inter_frame_delay_var.set(f"{delay_ms:g}")
 
     def connect_serial(self):
         port_display = self.port_combo.get()
@@ -505,6 +542,20 @@ class ModbusMasterGUI:
 
         self.stop_btn = ttk.Button(interval_frame, text="■ Stop")
         self.stop_btn.pack(side=tk.LEFT, padx=2)
+
+        ttk.Label(interval_frame, text="Delay ms:").pack(side=tk.LEFT, padx=(8, 2))
+        delay_vcmd = (self.root.register(self._validate_inter_frame_delay_input), "%P")
+        self.inter_frame_delay_entry = ttk.Entry(
+            interval_frame,
+            textvariable=self.inter_frame_delay_var,
+            width=7,
+            justify="right",
+            validate="key",
+            validatecommand=delay_vcmd,
+        )
+        self.inter_frame_delay_entry.pack(side=tk.LEFT, padx=2)
+        self.inter_frame_delay_entry.bind("<FocusOut>", self._normalize_inter_frame_delay_input)
+        self.inter_frame_delay_entry.bind("<Return>", self._normalize_inter_frame_delay_input)
 
         self.start_btn.config(command=self.start_polling_loop)
         self.stop_btn.config(command=self.stop_polling_loop)
