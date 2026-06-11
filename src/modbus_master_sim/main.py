@@ -134,6 +134,10 @@ class ModbusMasterGUI:
         self.baudrate_var = tk.StringVar(value=str(self.baudrate))
         self.parity_var = tk.StringVar(value=self.parity)
         self.inter_frame_delay_var = tk.StringVar(value=f"{DEFAULT_INTER_FRAME_DELAY_MS:g}")
+        self.bulk_start_var = tk.StringVar(value="0")
+        self.bulk_end_var = tk.StringVar(value="0")
+        self._bulk_polling_active = False
+        self._bulk_polling_task_id = None
 
         self.polling_widgets = []
         self.polling_index = 0
@@ -217,10 +221,26 @@ class ModbusMasterGUI:
         self.write_single_btn.grid(row=0, column=1, padx=5)
         self.write_multi_btn.grid(row=0, column=2, padx=5)
 
-        self.log_area = scrolledtext.ScrolledText(self.root, state="disabled")
-        self.log_area.grid(row=4, column=0, columnspan=2, padx=5, pady=5, sticky="nsew")
+        bulk_frame = ttk.LabelFrame(self.root, text="Bulk Read")
+        bulk_frame.grid(row=4, column=0, columnspan=2, padx=5, pady=3, sticky="ew")
+        vcmd_addr = (self.root.register(self._validate_slave_addr_input), "%P")
+        ttk.Label(bulk_frame, text="StartAddr:").grid(row=0, column=0, padx=4, sticky="w")
+        ttk.Entry(bulk_frame, textvariable=self.bulk_start_var, width=8, justify="right",
+                  validate="key", validatecommand=vcmd_addr).grid(row=0, column=1, padx=2)
+        ttk.Label(bulk_frame, text="EndAddr:").grid(row=0, column=2, padx=4, sticky="w")
+        ttk.Entry(bulk_frame, textvariable=self.bulk_end_var, width=8, justify="right",
+                  validate="key", validatecommand=vcmd_addr).grid(row=0, column=3, padx=2)
+        ttk.Button(bulk_frame, text="Read", command=self.on_bulk_read).grid(row=0, column=4, padx=4)
+        self._bulk_start_btn = ttk.Button(bulk_frame, text="▶ Start", command=self.start_bulk_polling)
+        self._bulk_start_btn.grid(row=0, column=5, padx=4)
+        self._bulk_stop_btn = ttk.Button(bulk_frame, text="■ Stop", command=self.stop_bulk_polling, state="disabled")
+        self._bulk_stop_btn.grid(row=0, column=6, padx=4)
+        ttk.Label(bulk_frame, text="(1 sec. polling)", foreground="gray").grid(row=0, column=7, padx=4, sticky="w")
 
-        ttk.Button(self.root, text="Reset", command=self.reset_app).grid(row=5, column=0, columnspan=2, pady=5)
+        self.log_area = scrolledtext.ScrolledText(self.root, state="disabled")
+        self.log_area.grid(row=5, column=0, columnspan=2, padx=5, pady=5, sticky="nsew")
+
+        ttk.Button(self.root, text="Reset", command=self.reset_app).grid(row=6, column=0, columnspan=2, pady=5)
 
     def reset_app(self):
         self.log("[Info] Resetting application...")
@@ -566,7 +586,7 @@ class ModbusMasterGUI:
         self.polling_widgets = []
 
         self.polling_frame = ttk.Frame(self.root, width=300, relief=tk.SUNKEN, padding=5)
-        self.polling_frame.grid(row=0, column=2, rowspan=6, sticky="nsew")
+        self.polling_frame.grid(row=0, column=2, rowspan=7, sticky="nsew")
         self.root.columnconfigure(2, weight=0, minsize=280)
 
         # --- Polling制御バー ---
@@ -795,7 +815,126 @@ class ModbusMasterGUI:
                     entry["label"].config(text=txt, background="white")
                 entry["prev"] = data
         return cb
-    
+
+    def _parse_bulk_addrs(self):
+        """StartAddr/EndAddr を検証してタプルを返す。失敗時は None。"""
+        start_raw = self.bulk_start_var.get().strip()
+        end_raw = self.bulk_end_var.get().strip()
+        if not start_raw or not end_raw:
+            self.log("[Error] StartAddr / EndAddr を入力してください。")
+            return None
+        try:
+            start_addr = int(start_raw)
+            end_addr = int(end_raw)
+        except ValueError:
+            self.log("[Error] アドレスは整数で入力してください。")
+            return None
+        if start_addr > end_addr:
+            self.log("[Error] StartAddr が EndAddr より大きいです。")
+            return None
+        if end_addr - start_addr + 1 > 125:
+            self.log("[Error] 一括Readは最大125ワードです（Modbus仕様）。")
+            return None
+        return start_addr, end_addr
+
+    def _send_bulk_read(self, start_addr, end_addr):
+        word_count = end_addr - start_addr + 1
+        self.log(f"\n[Bulk Read] → Addr=0x{start_addr:04X} ~ 0x{end_addr:04X}, Count={word_count}")
+        frame = struct.pack('>B B H H', self.slave_addr, 0x03, start_addr, word_count)
+        frame += struct.pack('<H', calc_crc(frame))
+        self.log(f"[Send Raw] {frame.hex().upper()}")
+        queue_send_read(
+            self.serial_port, self.slave_addr, start_addr, word_count,
+            lambda data: self.handle_bulk_read_result(data, start_addr, end_addr)
+        )
+
+    def on_bulk_read(self):
+        if not self.serial_port or not self.serial_port.is_open:
+            self.log("[Error] シリアルポートが接続されていません。")
+            return
+        result = self._parse_bulk_addrs()
+        if result is None:
+            return
+        self._send_bulk_read(*result)
+
+    def start_bulk_polling(self):
+        if not self.serial_port or not self.serial_port.is_open:
+            self.log("[Error] シリアルポートが接続されていません。")
+            return
+        result = self._parse_bulk_addrs()
+        if result is None:
+            return
+        self._bulk_poll_start, self._bulk_poll_end = result
+        self._bulk_polling_active = True
+        self._bulk_start_btn.config(state="disabled")
+        self._bulk_stop_btn.config(state="normal")
+        self._bulk_polling_loop()
+
+    def stop_bulk_polling(self):
+        self._bulk_polling_active = False
+        self._bulk_start_btn.config(state="normal")
+        self._bulk_stop_btn.config(state="disabled")
+        if self._bulk_polling_task_id:
+            self.root.after_cancel(self._bulk_polling_task_id)
+            self._bulk_polling_task_id = None
+
+    def _bulk_polling_loop(self):
+        if not self._bulk_polling_active:
+            return
+        self._send_bulk_read(self._bulk_poll_start, self._bulk_poll_end)
+        self._bulk_polling_task_id = self.root.after(1000, self._bulk_polling_loop)
+
+    def handle_bulk_read_result(self, data, start_addr, end_addr):
+        self.log("[Bulk Read Result]")
+        if not data:
+            self.log("→ No Response")
+            return
+
+        self.log(f"→ Raw: {data.hex().upper()}")
+
+        try:
+            if data[1] & 0x80:
+                err = data[2] if len(data) > 2 else None
+                self.log(f"→ Exception Response: Func=0x{data[1]:02X}, Code=0x{err:02X}")
+                return
+
+            byte_count = data[2]
+            values = data[3:3 + byte_count]
+
+            addr_to_reg = {reg['addr']: reg for reg in self.reg_table}
+            word_step_map = {"float": 2, "uint32_t": 2}
+
+            current_addr = start_addr
+            offset = 0
+            while current_addr <= end_addr and offset < len(values):
+                if current_addr in addr_to_reg:
+                    reg = addr_to_reg[current_addr]
+                    word_count = get_read_register_count(reg['type'], reg['length'])
+                    byte_len = word_count * 2
+                    chunk = values[offset:offset + byte_len]
+                    formatted = self.format_read_values(reg['type'], chunk, reg['length'])
+
+                    if reg['type'] == "string":
+                        self.log(f"  0x{current_addr:04X} [{reg['name']}] {formatted[0] if formatted else '?'}")
+                    else:
+                        word_step = word_step_map.get(reg['type'], 1)
+                        for i, val in enumerate(formatted):
+                            sub_addr = current_addr + i * word_step
+                            label = f"{reg['name']}[{i}]" if reg['length'] > 1 else reg['name']
+                            self.log(f"  0x{sub_addr:04X} [{label}] {val}")
+
+                    current_addr += word_count
+                    offset += byte_len
+                else:
+                    if offset + 2 <= len(values):
+                        val = struct.unpack('>H', bytes(values[offset:offset + 2]))[0]
+                        self.log(f"  0x{current_addr:04X} [Unknown] 0x{val:04X} ({val})")
+                    current_addr += 1
+                    offset += 2
+
+        except Exception as e:
+            self.log(f"[Decode Error] {str(e)}")
+
 
 # --- キュー化された通信処理（Read） ---
 def queue_send_read(serial_port, unit_id, addr, length, callback):

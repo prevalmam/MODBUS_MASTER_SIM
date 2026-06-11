@@ -107,6 +107,43 @@ registar
 
 通信途絶やエラーで値を取得できない場合は背景が赤色になり、異常を視覚的に把握できます。
 
+### 一括 Read の実行
+
+Read / Write (1) / Write (N) ボタンの下に **Bulk Read** エリアがあります。
+
+```
+[ StartAddr: __ ] [ EndAddr: __ ] [ Read ] [ ▶ Start ] [ ■ Stop ]  (1 sec. polling)
+```
+
+#### 単発モード（Read ボタン）
+
+1. `StartAddr` に読み出し開始アドレス、`EndAddr` に終了アドレスを入力します。
+2. `Read` ボタンを押すと、指定範囲を 1 回だけ一括読み出しします。
+
+#### 定期ポーリングモード（Start / Stop ボタン）
+
+1. `StartAddr` / `EndAddr` を入力します。
+2. `▶ Start` を押すと **1 秒間隔** で自動的に繰り返し読み出しを行います。
+3. `■ Stop` を押すと停止します。
+
+#### 結果のログ表示
+
+読み出し結果は `RegisterTable` の型定義を参照して解釈され、ログエリアに出力されます。
+
+```
+[Bulk Read] → Addr=0x0000 ~ 0x0005, Count=6
+[Bulk Read Result]
+  0x0000 [TEMP] 0x0064 (100)
+  0x0001 [PRESSURE] 1.2345
+  0x0003 [STATUS[0]] 0x0001 (1)
+  0x0004 [STATUS[1]] 0x0002 (2)
+  0x0005 [Unknown] 0x00FF (255)
+```
+
+- **既知レジスタ**（`RegisterTable` に登録済み）: 型に応じて `uint16_t` / `uint32_t` / `float` / `string` として整形表示します。配列の場合は要素ごとにアドレスと添字を表示します。
+- **未登録アドレス**: `uint16_t` として生値を表示します。
+- 範囲は最大 **125 ワード**（Modbus FC 0x03 仕様上限）です。
+
 ### Excel フォーマット概要
 
 ![RegisterTable Sheet](images/RegisterTable.png)
